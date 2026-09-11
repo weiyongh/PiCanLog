@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+
+set -u
+
+PROGRAM="PiCanLog"
+INTERFACE="${PICANLOG_INTERFACE:-can0}"
+BITRATE="${PICANLOG_BITRATE:-500000}"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+LOG_DIR="${PICANLOG_LOG_DIR:-${SCRIPT_DIR}/logs}"
+STATE_DIR="${PICANLOG_STATE_DIR:-/tmp/picanlog-${UID}}"
+PID_FILE="${STATE_DIR}/${INTERFACE}.pid"
+CURRENT_LOG_FILE="${STATE_DIR}/${INTERFACE}.log"
+
+usage() {
+    cat <<EOF
+${PROGRAM} - Raspberry Pi CAN logger helper
+
+Usage:
+  $0 status               Show USB, USB-CAN and logging status
+  $0 start                Start CAN logging in the background
+  $0 stop                 Stop logging and shut down the CAN interface
+  $0 help                 Show this help
+
+Defaults:
+  Interface: ${INTERFACE}
+  Bitrate:   ${BITRATE} bit/s (500 kbps)
+  Mode:      listen-only (the adapter will not transmit CAN frames)
+  Logs:      ${LOG_DIR}
+
+Optional environment variables:
+  PICANLOG_INTERFACE=can1
+  PICANLOG_BITRATE=250000
+  PICANLOG_LOG_DIR=/path/to/logs
+
+Examples:
+  $0 status
+  $0 start
+  $0 stop
+  PICANLOG_INTERFACE=can1 $0 status
+EOF
+}
+
+require_command() {
+    if ! command -v "$1" >/dev/null 2>&1; then
+        echo "Error: required command '$1' was not found." >&2
+        exit 1
+    fi
+}
+
+pid_is_logger() {
+    [ -r "$PID_FILE" ] || return 1
+    pid="$(cat "$PID_FILE" 2>/dev/null)"
+    case "$pid" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ -r "/proc/${pid}/cmdline" ] || return 1
+    tr '\0' ' ' < "/proc/${pid}/cmdline" | grep -q "candump.*${INTERFACE}"
+}
+
+show_status() {
+    require_command lsusb
+    require_command ip
+
+    echo "${PROGRAM} status"
+    echo "================"
+    echo "Configuration: interface=${INTERFACE}, bitrate=${BITRATE} bit/s, mode=listen-only"
+    echo
+    echo "Raspberry Pi throttling status:"
+    if command -v vcgencmd >/dev/null 2>&1; then
+        vcgencmd get_throttled
+    else
+        echo "  vcgencmd is not available."
+    fi
+    echo
+    echo "USB devices:"
+    lsusb
+    echo
+    echo "USB-CAN candidates:"
+    if ! lsusb | grep -Ei 'CAN|0c72:|0bfd:|0471:1200|1a86:55d8'; then
+        echo "  No known USB-CAN candidate found."
+    fi
+    echo
+    echo "CAN interface:"
+    if [ -d "/sys/class/net/${INTERFACE}" ]; then
+        ip -details -statistics link show "$INTERFACE"
+        driver_path="$(readlink -f "/sys/class/net/${INTERFACE}/device/driver" 2>/dev/null || true)"
+        [ -n "$driver_path" ] && echo "Driver: $(basename "$driver_path")"
+    else
+        echo "  ${INTERFACE} not found."
+    fi
+    echo
+    echo "Logger:"
+    if pid_is_logger; then
+        echo "  RUNNING (PID $(cat "$PID_FILE"))"
+        [ -r "$CURRENT_LOG_FILE" ] && echo "  Log: $(cat "$CURRENT_LOG_FILE")"
+    else
+        echo "  STOPPED"
+        [ -e "$PID_FILE" ] && rm -f "$PID_FILE" "$CURRENT_LOG_FILE"
+    fi
+    return 0
+}
+
+start_logger() {
+    require_command ip
+    require_command candump
+
+    if pid_is_logger; then
+        echo "Logger is already running (PID $(cat "$PID_FILE"))."
+        [ -r "$CURRENT_LOG_FILE" ] && echo "Log: $(cat "$CURRENT_LOG_FILE")"
+        exit 0
+    fi
+    if [ ! -d "/sys/class/net/${INTERFACE}" ]; then
+        echo "Error: CAN interface '${INTERFACE}' was not found." >&2
+        echo "Run '$0 status' to inspect connected USB devices." >&2
+        exit 1
+    fi
+
+    mkdir -p "$LOG_DIR" "$STATE_DIR"
+    log_file="${LOG_DIR}/can-$(date +%Y%m%d-%H%M%S).log"
+
+    sudo -n ip link set "$INTERFACE" down
+    if ! sudo -n ip link set "$INTERFACE" type can bitrate "$BITRATE" listen-only on; then
+        echo "Error: could not configure ${INTERFACE}." >&2
+        exit 1
+    fi
+    if ! sudo -n ip link set "$INTERFACE" up; then
+        echo "Error: could not start ${INTERFACE}." >&2
+        exit 1
+    fi
+
+    : > "$PID_FILE"
+    echo "$log_file" > "$CURRENT_LOG_FILE"
+    sudo -n sh -c 'echo "$$" > "$1"; exec candump -L "$2"' \
+        picanlog "$PID_FILE" "$INTERFACE" >> "$log_file" 2>&1 &
+    for _ in 1 2 3 4 5; do
+        [ -s "$PID_FILE" ] && break
+        sleep 1
+    done
+
+    if ! pid_is_logger; then
+        echo "Error: candump exited unexpectedly. Check: ${log_file}" >&2
+        sudo -n ip link set "$INTERFACE" down || true
+        rm -f "$PID_FILE" "$CURRENT_LOG_FILE"
+        exit 1
+    fi
+    logger_pid="$(cat "$PID_FILE")"
+
+    echo "Logging started."
+    echo "Interface: ${INTERFACE}, ${BITRATE} bit/s, listen-only"
+    echo "PID: ${logger_pid}"
+    echo "Log: ${log_file}"
+    echo "Stop with: $0 stop"
+}
+
+stop_logger() {
+    require_command ip
+
+    if pid_is_logger; then
+        logger_pid="$(cat "$PID_FILE")"
+        sudo -n kill -INT "$logger_pid" 2>/dev/null || true
+        for _ in 1 2 3 4 5; do
+            [ ! -e "/proc/${logger_pid}" ] && break
+            sleep 1
+        done
+        [ -e "/proc/${logger_pid}" ] && sudo -n kill "$logger_pid" 2>/dev/null || true
+        echo "Logging stopped."
+    else
+        echo "Logger was not running."
+    fi
+
+    if [ -d "/sys/class/net/${INTERFACE}" ]; then
+        sudo -n ip link set "$INTERFACE" down
+        echo "Interface ${INTERFACE} is down."
+    fi
+    if [ -r "$CURRENT_LOG_FILE" ]; then
+        echo "Log: $(cat "$CURRENT_LOG_FILE")"
+    fi
+    rm -f "$PID_FILE" "$CURRENT_LOG_FILE"
+}
+
+case "${1:-help}" in
+    status) show_status ;;
+    start)  start_logger ;;
+    stop)   stop_logger ;;
+    help|-h|--help) usage ;;
+    *)
+        echo "Error: unknown command '$1'." >&2
+        echo >&2
+        usage >&2
+        exit 2
+        ;;
+esac
