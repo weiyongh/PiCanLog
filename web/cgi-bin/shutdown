@@ -1,0 +1,13 @@
+#!/bin/sh
+
+if [ "${REQUEST_METHOD:-}" != "POST" ]; then
+    printf 'Status: 405 Method Not Allowed\r\nAllow: POST\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nMethod Not Allowed\n'
+    exit 0
+fi
+
+printf 'Content-Type: text/plain; charset=utf-8\r\n\r\n'
+if output=$(sudo -n systemd-run --on-active=3s /sbin/poweroff 2>&1); then
+    printf '关机命令已提交，树莓派将在约 3 秒后关闭。\n'
+else
+    printf '关机命令提交失败。\n\n%s\n' "$output"
+fi

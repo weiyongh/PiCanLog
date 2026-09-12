@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PiCanLog</title>
+  <style>
+    body { max-width: 32rem; margin: 4rem auto; padding: 0 1rem; font-family: sans-serif; color: #202124; }
+    h1 { margin-bottom: 2rem; }
+    .actions { display: grid; gap: 1rem; }
+    button { width: 100%; padding: 1rem; border: 0; border-radius: .5rem; color: white; font-size: 1.1rem; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: wait; }
+    .start { background: #16833b; }
+    .stop { background: #b3261e; }
+    .status { background: #315b8a; }
+    .logs { background: #6b4f91; }
+    .shutdown { margin-top: 1rem; background: #3c4043; }
+    #result { margin-top: 1.5rem; padding: 1rem; min-height: 3rem; overflow: auto; border-radius: .5rem; background: #f1f3f4; white-space: pre-wrap; }
+    #result a { display: block; margin: .35rem 0; }
+  </style>
+</head>
+<body>
+  <h1>PiCanLog</h1>
+  <div class="actions">
+    <button class="start" type="button" data-action="start">启动日志</button>
+    <button class="stop" type="button" data-action="stop">停止日志</button>
+    <button class="status" type="button" data-action="status">查看状态</button>
+    <button class="logs" type="button" data-action="logs">查看日志</button>
+    <button class="shutdown" type="button" data-action="shutdown">关闭树莓派</button>
+  </div>
+  <div id="result" aria-live="polite">请选择操作</div>
+  <script>
+    const result = document.getElementById('result');
+    const buttons = Array.from(document.querySelectorAll('[data-action]'));
+
+    buttons.forEach((button) => {
+      button.addEventListener('click', async () => {
+        if (button.dataset.action === 'shutdown' && !window.confirm('确定要关闭树莓派吗？')) {
+          return;
+        }
+        buttons.forEach((item) => { item.disabled = true; });
+        result.textContent = '正在执行…';
+        try {
+          const response = await fetch(`/cgi-bin/${button.dataset.action}`, { method: 'POST' });
+          const text = await response.text();
+          if (button.dataset.action === 'logs' && response.ok) {
+            const files = text.split('\n').filter(Boolean);
+            result.textContent = files.length ? '' : '暂无日志';
+            files.forEach((file) => {
+              const link = document.createElement('a');
+              link.href = `/cgi-bin/download?file=${encodeURIComponent(file)}`;
+              link.textContent = file;
+              link.setAttribute('download', file);
+              result.appendChild(link);
+            });
+          } else {
+            result.textContent = text || `HTTP ${response.status}`;
+          }
+        } catch (error) {
+          result.textContent = `请求失败：${error.message}`;
+        } finally {
+          buttons.forEach((item) => { item.disabled = false; });
+        }
+      });
+    });
+  </script>
+</body>
+</html>

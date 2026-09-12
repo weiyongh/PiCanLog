@@ -1,0 +1,13 @@
+[Unit]
+Description=PiCanLog uHTTPd web control
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/uhttpd -f -p 0.0.0.0:8080 -h /home/pi/PiCanLog/web -x /cgi-bin
+User=pi
+Group=pi
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,28 @@
+#!/bin/sh
+
+LOG_DIR=/home/pi/PiCanLog/logs
+file=${QUERY_STRING#file=}
+
+if [ -z "$file" ] || [ "$file" != "$(basename -- "$file")" ]; then
+    printf 'Status: 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nInvalid file name\n'
+    exit 0
+fi
+
+case "$file" in
+    can-*.log) ;;
+    *)
+        printf 'Status: 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nInvalid file name\n'
+        exit 0
+        ;;
+esac
+
+path="${LOG_DIR}/${file}"
+if [ ! -f "$path" ]; then
+    printf 'Status: 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nLog not found\n'
+    exit 0
+fi
+
+printf 'Content-Type: application/octet-stream\r\n'
+printf 'Content-Disposition: attachment; filename="%s"\r\n' "$file"
+printf 'Content-Length: %s\r\n\r\n' "$(wc -c < "$path")"
+cat "$path"

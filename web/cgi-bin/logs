@@ -1,0 +1,9 @@
+#!/bin/sh
+
+if [ "${REQUEST_METHOD:-}" != "POST" ]; then
+    printf 'Status: 405 Method Not Allowed\r\nAllow: POST\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nMethod Not Allowed\n'
+    exit 0
+fi
+
+printf 'Content-Type: text/plain; charset=utf-8\r\n\r\n'
+find /home/pi/PiCanLog/logs -maxdepth 1 -type f -name 'can-*.log' -printf '%f\n' 2>/dev/null | sort -r

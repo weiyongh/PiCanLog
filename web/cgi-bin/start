@@ -1,0 +1,13 @@
+#!/bin/sh
+
+if [ "${REQUEST_METHOD:-}" != "POST" ]; then
+    printf 'Status: 405 Method Not Allowed\r\nAllow: POST\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nMethod Not Allowed\n'
+    exit 0
+fi
+
+printf 'Content-Type: text/plain; charset=utf-8\r\n\r\n'
+if output=$(/home/pi/PiCanLog/picanlog start 2>&1); then
+    printf '日志已启动\n\n%s\n' "$output"
+else
+    printf '启动失败\n\n%s\n' "$output"
+fi
